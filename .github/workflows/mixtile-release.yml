@@ -10,6 +10,14 @@ on:
         options:
           - "24.10"
           - "25.12"
+      board:
+        description: Mixtile board to build
+        required: true
+        type: choice
+        options:
+          - "all"
+          - "edge2"
+          - "blade3"
       ref:
         description: Optional git ref to build
         required: false
@@ -28,14 +36,19 @@ permissions:
   contents: write
 
 concurrency:
-  group: mixtile-release-${{ github.ref || inputs.series || github.run_id }}
+  group: mixtile-release-${{ github.ref || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  meta:
     runs-on: ubuntu-latest
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    outputs:
+      board: ${{ steps.meta.outputs.board }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      ref: ${{ steps.meta.outputs.ref }}
+      series: ${{ steps.meta.outputs.series }}
+      tag: ${{ steps.meta.outputs.tag }}
+      upstream_baseline: ${{ steps.meta.outputs.upstream_baseline }}
 
     steps:
       - name: Resolve build metadata
@@ -47,6 +60,7 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             ref="${GITHUB_REF}"
             tag="${GITHUB_REF_NAME}"
+            board="all"
 
             case "${tag}" in
               mixtile-v24.10.*) series="24.10" ;;
@@ -60,6 +74,7 @@ jobs:
             publish_release=true
           else
             series="${{ inputs.series }}"
+            board="${{ inputs.board }}"
             ref="${{ inputs.ref }}"
             publish_release="${{ inputs.publish_release }}"
             tag=""
@@ -73,17 +88,35 @@ jobs:
             fi
           fi
 
-          echo "series=${series}" >> "${GITHUB_OUTPUT}"
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "config=configs/mixtile-rockchip-${series}.config" >> "${GITHUB_OUTPUT}"
-
-          if [[ "${publish_release}" == "true" && -n "${tag}" ]]; then
-            echo "publish_release=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "publish_release=false" >> "${GITHUB_OUTPUT}"
+          upstream_baseline="openwrt-${series}"
+          if [[ -n "${tag}" ]]; then
+            maybe_baseline="$(echo "${tag}" | sed -E 's/^mixtile-v([0-9]+\.[0-9]+\.[0-9]+)-r[0-9]+$/v\1/')"
+            if [[ "${maybe_baseline}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              upstream_baseline="${maybe_baseline}"
+            fi
           fi
 
+          echo "board=${board}" >> "${GITHUB_OUTPUT}"
+          echo "publish_release=${publish_release}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "series=${series}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "upstream_baseline=${upstream_baseline}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    if: ${{ needs.meta.outputs.board == 'all' || needs.meta.outputs.board == matrix.board }}
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - edge2
+          - blade3
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
       - name: Free disk space
         shell: bash
         run: |
@@ -96,7 +129,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ steps.meta.outputs.ref }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - name: Install build dependencies
         shell: bash
@@ -130,9 +163,10 @@ jobs:
           path: |
             dl
             .ccache
-          key: ${{ runner.os }}-${{ steps.meta.outputs.series }}-${{ hashFiles('configs/mixtile-rockchip-24.10.config', 'configs/mixtile-rockchip-25.12.config', 'feeds.conf.default') }}
+          key: ${{ runner.os }}-${{ needs.meta.outputs.series }}-${{ matrix.board }}-${{ hashFiles('configs/mixtile-*.config', 'feeds.conf.default') }}
           restore-keys: |
-            ${{ runner.os }}-${{ steps.meta.outputs.series }}-
+            ${{ runner.os }}-${{ needs.meta.outputs.series }}-${{ matrix.board }}-
+            ${{ runner.os }}-${{ needs.meta.outputs.series }}-
 
       - name: Update and install feeds
         shell: bash
@@ -145,22 +179,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat "${{ steps.meta.outputs.config }}" > .config
+          cat "configs/mixtile-${{ matrix.board }}-${{ needs.meta.outputs.series }}.config" > .config
           printf '%s\n' 'CONFIG_CCACHE=y' >> .config
           make defconfig
-
-      - name: Resolve release metadata
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(awk -F':=' '/^VERSION_NUMBER:=/{gsub(/ /, "", $2); print $2}' include/version.mk)"
-          if [[ -z "${version}" ]]; then
-            echo "::error::Unable to resolve OpenWrt version"
-            exit 1
-          fi
-          echo "upstream_baseline=v${version}" >> "${GITHUB_OUTPUT}"
-          echo "release_name=Mixtile OpenWrt ${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Download sources
         shell: bash
@@ -179,17 +200,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          board="${{ matrix.board }}"
           target_dir="bin/targets/rockchip/armv8"
           mkdir -p release-assets
-          find "${target_dir}" -maxdepth 1 -type f \
-            \( -name '*mixtile*' -o -name '*.buildinfo' -o -name '*.manifest' -o -name 'profiles.json' -o -name 'sha256sums' \) \
-            -exec cp {} release-assets/ \;
+
+          find "${target_dir}" -maxdepth 1 -type f -name "*mixtile_${board}*" -exec cp {} release-assets/ \;
+
+          for pattern in profiles.json sha256sums "*.buildinfo" "*.manifest"; do
+            for path in "${target_dir}"/${pattern}; do
+              if [[ -e "${path}" ]]; then
+                cp "${path}" "release-assets/${board}-$(basename "${path}")"
+              fi
+            done
+          done
 
       - name: Upload release assets
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: mixtile-${{ steps.meta.outputs.series }}-firmware
+          name: mixtile-${{ needs.meta.outputs.series }}-${{ matrix.board }}-firmware
           path: release-assets/
           if-no-files-found: error
 
@@ -197,20 +226,34 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: mixtile-${{ steps.meta.outputs.series }}-logs
+          name: mixtile-${{ needs.meta.outputs.series }}-${{ matrix.board }}-logs
           path: logs/
           if-no-files-found: warn
 
+  release:
+    needs:
+      - meta
+      - build
+    runs-on: ubuntu-latest
+    if: ${{ needs.meta.outputs.publish_release == 'true' }}
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mixtile-${{ needs.meta.outputs.series }}-*-firmware
+          merge-multiple: true
+          path: release-assets/
+
       - name: Create draft release
-        if: ${{ success() && steps.meta.outputs.publish_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.version.outputs.release_name }}
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Mixtile OpenWrt ${{ needs.meta.outputs.tag }}
           draft: true
           prerelease: false
           body: |
-            Upstream baseline: `${{ steps.version.outputs.upstream_baseline }}`
+            Upstream baseline: `${{ needs.meta.outputs.upstream_baseline }}`
 
             Supported devices:
             - Mixtile Edge 2
