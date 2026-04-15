@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       board: ${{ steps.meta.outputs.board }}
+      boards: ${{ steps.meta.outputs.boards }}
       publish_release: ${{ steps.meta.outputs.publish_release }}
       ref: ${{ steps.meta.outputs.ref }}
       series: ${{ steps.meta.outputs.series }}
@@ -88,6 +89,12 @@ jobs:
             fi
           fi
 
+          if [[ "${board}" == "all" ]]; then
+            boards='["edge2","blade3"]'
+          else
+            boards="[\"${board}\"]"
+          fi
+
           upstream_baseline="openwrt-${series}"
           if [[ -n "${tag}" ]]; then
             maybe_baseline="$(echo "${tag}" | sed -E 's/^mixtile-v([0-9]+\.[0-9]+\.[0-9]+)-r[0-9]+$/v\1/')"
@@ -97,6 +104,7 @@ jobs:
           fi
 
           echo "board=${board}" >> "${GITHUB_OUTPUT}"
+          echo "boards=${boards}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${publish_release}" >> "${GITHUB_OUTPUT}"
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "series=${series}" >> "${GITHUB_OUTPUT}"
@@ -106,13 +114,10 @@ jobs:
   build:
     needs: meta
     runs-on: ubuntu-latest
-    if: ${{ needs.meta.outputs.board == 'all' || needs.meta.outputs.board == matrix.board }}
     strategy:
       fail-fast: false
       matrix:
-        board:
-          - edge2
-          - blade3
+        board: ${{ fromJSON(needs.meta.outputs.boards) }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
 
