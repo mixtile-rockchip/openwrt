@@ -277,6 +277,19 @@ define U-Boot/hinlink-h68k-rk3568
   NAME:=HINLINK H68K
   BUILD_DEVICES:= \
     hinlink_h68k
+
+define U-Boot/mixtile-edge2-rk3568
+  $(U-Boot/rk3568/Default)
+  NAME:=Mixtile Edge2
+  BUILD_DEVICES:= \
+    mixtile_edge2
+endef
+
+define U-Boot/mixtile-blade3-rk3588
+  $(U-Boot/rk358x/Default)
+  NAME:=Mixtile Blade3
+  BUILD_DEVICES:= \
+    mixtile_blade3
 endef
 
 define U-Boot/nanopi-r5c-rk3568
@@ -453,6 +466,7 @@ UBOOT_TARGETS := \
   fastrhino-r66s-rk3568 \
   hinlink-h66k-rk3568 \
   hinlink-h68k-rk3568 \
+  mixtile-edge2-rk3568 \
   nanopi-r5c-rk3568 \
   nanopi-r5s-rk3568 \
   radxa-e25-rk3568 \
@@ -465,6 +479,7 @@ UBOOT_TARGETS := \
   rock-5-itx-rk3588 \
   rock5b-rk3588 \
   sige7-rk3588 \
+  mixtile-blade3-rk3588 \
   nanopi-r6c-rk3588s \
   nanopi-r6s-rk3588s \
   rock5a-rk3588s \
