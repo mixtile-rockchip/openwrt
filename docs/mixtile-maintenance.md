@@ -2,11 +2,11 @@
 
 ## Branch model
 
+- `main`: Mixtile development branch tracking OpenWrt `main`
 - `openwrt-24.10`: Mixtile maintenance branch for OpenWrt `24.10.x`
-- `openwrt-25.12`: primary Mixtile maintenance branch for OpenWrt `25.12.x`
-- `main`: fast-forward mirror of `openwrt-25.12`; never develop on it directly
+- `openwrt-25.12`: Mixtile maintenance branch for OpenWrt `25.12.x`
 
-New Mixtile changes land in `openwrt-25.12` first. Backport to
+New Mixtile changes land in `main` first. Backport to `openwrt-25.12` and
 `openwrt-24.10` only after the same change is proven to be compatible.
 
 ## Release tags
@@ -68,9 +68,9 @@ Validation sequence:
 
 Publish only after SSH validation passes:
 
-1. Push `openwrt-24.10`
-2. Push `openwrt-25.12`
-3. Fast-forward `main` to `openwrt-25.12`
+1. Push `main`
+2. Push `openwrt-24.10`
+3. Push `openwrt-25.12`
 4. Push maintenance docs and `.github/workflows/mixtile-release.yml`
 5. Create `mixtile-v24.10.x-rN` or `mixtile-v25.12.x-rN`
 
