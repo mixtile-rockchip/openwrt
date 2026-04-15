@@ -16,6 +16,7 @@ rockchip_setup_interfaces()
 	friendlyarm,nanopi-r4s-enterprise|\
 	friendlyarm,nanopi-r6c|\
 	radxa,rockpi-e|\
+	mixtile,blade3|\
 	xunlong,orangepi-r1-plus|\
 	xunlong,orangepi-r1-plus-lts)
 		ucidef_set_interfaces_lan_wan 'eth1' 'eth0'
@@ -26,6 +27,10 @@ rockchip_setup_interfaces()
 	radxa,e25|\
 	radxa,rock-3b)
 		ucidef_set_interfaces_lan_wan 'eth0' 'eth1'
+		;;
+	focalcrest,mixtile-edge2)
+		ucidef_set_interface_wan 'eth0'
+		uci set firewall.@zone[1].input='ACCEPT'
 		;;
 	friendlyarm,nanopi-r5s)
 		ucidef_set_interfaces_lan_wan 'eth1 eth2' 'eth0'

@@ -62,6 +62,11 @@ make4.1+ perl python3.7+ rsync subversion unzip which
    cross-compile toolchain and then cross-compile the GNU/Linux kernel & all chosen
    applications for your target system.
 
+## Mixtile Maintenance
+
+Mixtile-specific branch ownership, release tags, and the SSH-first validation
+flow are documented in [docs/mixtile-maintenance.md](docs/mixtile-maintenance.md).
+
 ### Related Repositories
 
 The main repository uses multiple sub-repositories to manage packages of
