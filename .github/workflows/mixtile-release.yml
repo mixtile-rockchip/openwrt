@@ -1,0 +1,226 @@
+name: Build Mixtile firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        description: OpenWrt stable series to build
+        required: true
+        type: choice
+        options:
+          - "24.10"
+          - "25.12"
+      ref:
+        description: Optional git ref to build
+        required: false
+        type: string
+      publish_release:
+        description: Create a draft GitHub release when building a tag
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "mixtile-v24.10.*"
+      - "mixtile-v25.12.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mixtile-release-${{ github.ref || inputs.series || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Resolve build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            ref="${GITHUB_REF}"
+            tag="${GITHUB_REF_NAME}"
+
+            case "${tag}" in
+              mixtile-v24.10.*) series="24.10" ;;
+              mixtile-v25.12.*) series="25.12" ;;
+              *)
+                echo "::error::Unsupported Mixtile tag: ${tag}"
+                exit 1
+                ;;
+            esac
+
+            publish_release=true
+          else
+            series="${{ inputs.series }}"
+            ref="${{ inputs.ref }}"
+            publish_release="${{ inputs.publish_release }}"
+            tag=""
+
+            if [[ -z "${ref}" ]]; then
+              ref="openwrt-${series}"
+            elif [[ "${ref}" == refs/tags/* ]]; then
+              tag="${ref#refs/tags/}"
+            elif [[ "${ref}" == mixtile-v* ]]; then
+              tag="${ref}"
+            fi
+          fi
+
+          echo "series=${series}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "config=configs/mixtile-rockchip-${series}.config" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${publish_release}" == "true" && -n "${tag}" ]]; then
+            echo "publish_release=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "publish_release=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker system prune -af || true
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.meta.outputs.ref }}
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ccache \
+            file \
+            flex \
+            g++ \
+            gawk \
+            gcc-multilib \
+            gettext \
+            git \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-setuptools \
+            rsync \
+            subversion \
+            swig \
+            unzip \
+            wget \
+            zlib1g-dev
+
+      - name: Restore caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            .ccache
+          key: ${{ runner.os }}-${{ steps.meta.outputs.series }}-${{ hashFiles('configs/mixtile-rockchip-24.10.config', 'configs/mixtile-rockchip-25.12.config', 'feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ steps.meta.outputs.series }}-
+
+      - name: Update and install feeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "${{ steps.meta.outputs.config }}" > .config
+          printf '%s\n' 'CONFIG_CCACHE=y' >> .config
+          make defconfig
+
+      - name: Resolve release metadata
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F':=' '/^VERSION_NUMBER:=/{gsub(/ /, "", $2); print $2}' include/version.mk)"
+          if [[ -z "${version}" ]]; then
+            echo "::error::Unable to resolve OpenWrt version"
+            exit 1
+          fi
+          echo "upstream_baseline=v${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=Mixtile OpenWrt ${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          make download -j"$(nproc)"
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)" BUILD_LOG=1
+
+      - name: Collect release assets
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_dir="bin/targets/rockchip/armv8"
+          mkdir -p release-assets
+          find "${target_dir}" -maxdepth 1 -type f \
+            \( -name '*mixtile*' -o -name '*.buildinfo' -o -name '*.manifest' -o -name 'profiles.json' -o -name 'sha256sums' \) \
+            -exec cp {} release-assets/ \;
+
+      - name: Upload release assets
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixtile-${{ steps.meta.outputs.series }}-firmware
+          path: release-assets/
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixtile-${{ steps.meta.outputs.series }}-logs
+          path: logs/
+          if-no-files-found: warn
+
+      - name: Create draft release
+        if: ${{ success() && steps.meta.outputs.publish_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.version.outputs.release_name }}
+          draft: true
+          prerelease: false
+          body: |
+            Upstream baseline: `${{ steps.version.outputs.upstream_baseline }}`
+
+            Supported devices:
+            - Mixtile Edge 2
+            - Mixtile Blade 3
+
+            Upgrade path:
+            - Stay within the same OpenWrt stable series for unattended sysupgrade.
+            - Validate cross-series upgrades manually before publishing.
+
+            Known issues:
+            - Update this draft with device-specific validation notes before publishing.
+          files: |
+            release-assets/*

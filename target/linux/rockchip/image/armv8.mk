@@ -208,6 +208,26 @@ define Device/lunzn_fastrhino-r66s
 endef
 TARGET_DEVICES += lunzn_fastrhino-r66s
 
+define Device/mixtile_edge2
+  $(Device/rk3568)
+  DEVICE_VENDOR := Mixtile
+  DEVICE_MODEL := Edge2
+  DEVICE_DTS := rk3568-mixtile-edge2
+  UBOOT_DEVICE_NAME := mixtile-edge2-rk3568
+  DEVICE_PACKAGES := kmod-brcmfmac wpad-basic-wolfssl
+endef
+TARGET_DEVICES += mixtile_edge2
+
+define Device/mixtile_blade3
+  $(Device/rk3588)
+  DEVICE_VENDOR := Mixtile
+  DEVICE_MODEL := Blade3
+  DEVICE_DTS := rk3588-mixtile-blade3
+  DEVICE_PACKAGES := kmod-r8169
+  UBOOT_DEVICE_NAME := mixtile-blade3-rk3588
+endef
+TARGET_DEVICES += mixtile_blade3
+
 define Device/pine64_rock64
   $(Device/rk3328)
   DEVICE_VENDOR := Pine64
