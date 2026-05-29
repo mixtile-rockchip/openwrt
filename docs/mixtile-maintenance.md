@@ -11,13 +11,15 @@ New Mixtile changes land in `main` first. Backport to `openwrt-25.12` and
 
 ## Release tags
 
-- `mixtile-v24.10.x-rN`
-- `mixtile-v25.12.x-rN`
+Tags follow the upstream version directly, without a Mixtile revision suffix:
+
+- `mixtile-v24.10.x`
+- `mixtile-v25.12.x`
 
 Examples:
 
-- `mixtile-v24.10.6-r1`
-- `mixtile-v25.12.2-r1`
+- `mixtile-v24.10.6`
+- `mixtile-v25.12.4`
 
 `24.10` remains supported only while upstream OpenWrt supports the series.
 Freeze the branch after upstream declares `24.10` EOL.
@@ -72,6 +74,6 @@ Publish only after SSH validation passes:
 2. Push `openwrt-24.10`
 3. Push `openwrt-25.12`
 4. Push maintenance docs and `.github/workflows/mixtile-release.yml`
-5. Create `mixtile-v24.10.x-rN` or `mixtile-v25.12.x-rN`
+5. Create `mixtile-v24.10.x` or `mixtile-v25.12.x`
 
 Archive old migration branches with tags before deleting the remote refs.

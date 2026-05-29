@@ -97,7 +97,7 @@ jobs:
 
           upstream_baseline="openwrt-${series}"
           if [[ -n "${tag}" ]]; then
-            maybe_baseline="$(echo "${tag}" | sed -E 's/^mixtile-v([0-9]+\.[0-9]+\.[0-9]+)-r[0-9]+$/v\1/')"
+            maybe_baseline="$(echo "${tag}" | sed -E 's/^mixtile-v([0-9]+\.[0-9]+\.[0-9]+)(-r[0-9]+)?$/v\1/')"
             if [[ "${maybe_baseline}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               upstream_baseline="${maybe_baseline}"
             fi
@@ -187,7 +187,29 @@ jobs:
           set -euo pipefail
           cat "configs/mixtile-${{ matrix.board }}-${{ needs.meta.outputs.series }}.config" > .config
           printf '%s\n' 'CONFIG_CCACHE=y' >> .config
+          # Enable all kmod packages
+          sed -i '/^# CONFIG_PACKAGE_kmod/d' .config
+          grep -q 'CONFIG_ALL_KMODS=y' .config || printf '%s\n' 'CONFIG_ALL_KMODS=y' >> .config
           make defconfig
+          KMOD_M=$(grep -c 'CONFIG_PACKAGE_kmod.*=m' .config || true)
+          echo "kmod packages (module): ${KMOD_M}"
+
+      - name: Pre-configure kmod feed in firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE="${{ needs.meta.outputs.upstream_baseline }}"
+          if [[ "${BASELINE}" == v* ]]; then
+            VERSION="${BASELINE#v}"
+          else
+            VERSION="$(grep 'VERSION_NUMBER' include/version.mk | sed -n 's/.*VERSION_NUMBER[[:space:]]*[:?]*=[[:space:]]*\([^#]*\)/\1/p' | tr -d ' "' | head -1)"
+          fi
+          echo "Embedding kmod feed for version: ${VERSION}"
+          mkdir -p target/linux/rockchip/armv8/base-files/etc/opkg
+          cat > target/linux/rockchip/armv8/base-files/etc/opkg/customfeeds.conf << FEED
+          src/gz mixtile_kmod https://mixtile-rockchip.github.io/openwrt/releases/${VERSION}/targets/rockchip/armv8/packages
+          FEED
+          cat target/linux/rockchip/armv8/base-files/etc/opkg/customfeeds.conf
 
       - name: Download sources
         shell: bash
@@ -206,19 +228,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          board="${{ matrix.board }}"
           target_dir="bin/targets/rockchip/armv8"
           mkdir -p release-assets
 
-          find "${target_dir}" -maxdepth 1 -type f -name "*mixtile_${board}*" -exec cp {} release-assets/ \;
-
-          for pattern in profiles.json sha256sums "*.buildinfo" "*.manifest"; do
-            for path in "${target_dir}"/${pattern}; do
-              if [[ -e "${path}" ]]; then
-                cp "${path}" "release-assets/${board}-$(basename "${path}")"
-              fi
-            done
-          done
+          # Firmware images only (GitHub Release provides built-in SHA256 verification)
+          find "${target_dir}" -maxdepth 1 -type f -name "*.img.gz" -exec cp {} release-assets/ \;
 
       - name: Upload release assets
         if: ${{ success() }}
@@ -228,6 +242,14 @@ jobs:
           path: release-assets/
           if-no-files-found: error
 
+      - name: Upload kmod packages
+        if: ${{ success() && matrix.board == 'edge2' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmod-packages
+          path: bin/targets/rockchip/armv8/packages/
+          if-no-files-found: warn
+
       - name: Upload build logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -236,10 +258,71 @@ jobs:
           path: logs/
           if-no-files-found: warn
 
+  publish-pages:
+    needs:
+      - meta
+      - build
+    runs-on: ubuntu-latest
+    if: ${{ needs.meta.outputs.publish_release == 'true' }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mixtile-${{ needs.meta.outputs.series }}-*-firmware
+          merge-multiple: true
+          path: staging-firmware/
+
+      - name: Download kmod packages
+        uses: actions/download-artifact@v4
+        with:
+          name: kmod-packages
+          path: staging-kmod/
+
+      - name: Publish to gh-pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE="${{ needs.meta.outputs.upstream_baseline }}"
+          VERSION="${BASELINE#v}"
+
+          # Mirror upstream structure:
+          #   releases/{VERSION}/targets/rockchip/armv8/           ← firmware + sha256sums
+          #   releases/{VERSION}/targets/rockchip/armv8/packages/  ← kmod packages
+          TARGET_DIR="releases/${VERSION}/targets/rockchip/armv8"
+          PKG_DIR="${TARGET_DIR}/packages"
+
+          mkdir -p "${TARGET_DIR}"
+          mkdir -p "${PKG_DIR}"
+
+          # Firmware images
+          find staging-firmware/ -name '*.img.gz' -exec cp {} "${TARGET_DIR}/" \;
+
+          # Generate combined sha256sums (mirrors upstream structure)
+          (cd "${TARGET_DIR}" && sha256sum *.img.gz > sha256sums)
+
+          # kmod packages (edge2 and blade3 share the same target, one set is enough)
+          rsync -a --delete staging-kmod/ "${PKG_DIR}/"
+
+          # Clean up all staging directories and any legacy artifacts
+          rm -rf staging-firmware/ staging-kmod/ kmod-temp/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Add ${VERSION} firmware and kmod packages"
+          git push
+
   release:
     needs:
       - meta
       - build
+      - publish-pages
     runs-on: ubuntu-latest
     if: ${{ needs.meta.outputs.publish_release == 'true' }}
 
@@ -265,11 +348,15 @@ jobs:
             - Mixtile Edge 2
             - Mixtile Blade 3
 
-            Upgrade path:
-            - Stay within the same OpenWrt stable series for unattended sysupgrade.
-            - Validate cross-series upgrades manually before publishing.
+            Firmware types:
+            - `ext4`: writable filesystem, for development
+            - `squashfs`: read-only with overlay, for production (supports factory reset)
 
-            Known issues:
-            - Update this draft with device-specific validation notes before publishing.
+            kmod packages:
+            Kernel modules are pre-configured in the firmware. Just run:
+            ```
+            opkg update
+            opkg install kmod-xxx
+            ```
           files: |
             release-assets/*
