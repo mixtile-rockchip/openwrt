@@ -1,15 +1,15 @@
 diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
-index 462b861..7076376 100644
+index 8b599f6..ee0c286 100644
 --- a/arch/arm64/boot/dts/rockchip/Makefile
 +++ b/arch/arm64/boot/dts/rockchip/Makefile
-@@ -108,6 +108,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-armsom-sige7.dtb
- dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-edgeble-neu6a-io.dtb
- dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-edgeble-neu6b-io.dtb
+@@ -143,6 +143,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-edgeble-neu6b-io.dtb
  dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-evb1-v10.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-friendlyelec-cm3588-nas.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-jaguar.dtb
 +dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-mixtile-blade3.dtb
  dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nanopc-t6.dtb
- dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-rock-5b.dtb
- dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588s-indiedroid-nova.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nanopc-t6-lts.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-ok3588-c.dtb
 diff --git a/arch/arm64/boot/dts/rockchip/rk3588-mixtile-blade3.dts b/arch/arm64/boot/dts/rockchip/rk3588-mixtile-blade3.dts
 new file mode 100644
 index 0000000..3543126

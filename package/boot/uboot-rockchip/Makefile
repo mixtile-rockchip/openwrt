@@ -273,7 +273,7 @@ define U-Boot/mixtile-edge2-rk3568
 endef
 
 define U-Boot/mixtile-blade3-rk3588
-  $(U-Boot/rk3588/Default)
+  $(U-Boot/rk358x/Default)
   NAME:=Mixtile Blade3
   BUILD_DEVICES:= \
     mixtile_blade3
