@@ -10,6 +10,14 @@ on:
         options:
           - "24.10"
           - "25.12"
+      board:
+        description: Mixtile board to build
+        required: true
+        type: choice
+        options:
+          - "all"
+          - "edge2"
+          - "blade3"
       ref:
         description: Optional git ref to build
         required: false
@@ -28,14 +36,20 @@ permissions:
   contents: write
 
 concurrency:
-  group: mixtile-release-${{ github.ref || inputs.series || github.run_id }}
+  group: mixtile-release-${{ github.event.inputs.ref || github.event.inputs.series || github.ref || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  meta:
     runs-on: ubuntu-latest
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    outputs:
+      board: ${{ steps.meta.outputs.board }}
+      boards: ${{ steps.meta.outputs.boards }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      ref: ${{ steps.meta.outputs.ref }}
+      series: ${{ steps.meta.outputs.series }}
+      tag: ${{ steps.meta.outputs.tag }}
+      upstream_baseline: ${{ steps.meta.outputs.upstream_baseline }}
 
     steps:
       - name: Resolve build metadata
@@ -47,6 +61,7 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             ref="${GITHUB_REF}"
             tag="${GITHUB_REF_NAME}"
+            board="all"
 
             case "${tag}" in
               mixtile-v24.10.*) series="24.10" ;;
@@ -60,6 +75,7 @@ jobs:
             publish_release=true
           else
             series="${{ inputs.series }}"
+            board="${{ inputs.board }}"
             ref="${{ inputs.ref }}"
             publish_release="${{ inputs.publish_release }}"
             tag=""
@@ -73,17 +89,39 @@ jobs:
             fi
           fi
 
-          echo "series=${series}" >> "${GITHUB_OUTPUT}"
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "config=configs/mixtile-rockchip-${series}.config" >> "${GITHUB_OUTPUT}"
-
-          if [[ "${publish_release}" == "true" && -n "${tag}" ]]; then
-            echo "publish_release=true" >> "${GITHUB_OUTPUT}"
+          if [[ "${board}" == "all" ]]; then
+            boards='["edge2","blade3"]'
           else
-            echo "publish_release=false" >> "${GITHUB_OUTPUT}"
+            boards="[\"${board}\"]"
           fi
 
+          upstream_baseline="openwrt-${series}"
+          if [[ -n "${tag}" ]]; then
+            maybe_baseline="$(echo "${tag}" | sed -E 's/^mixtile-v([0-9]+\.[0-9]+\.[0-9]+)(-r[0-9]+)?$/v\1/')"
+            if [[ "${maybe_baseline}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              upstream_baseline="${maybe_baseline}"
+            fi
+          fi
+
+          echo "board=${board}" >> "${GITHUB_OUTPUT}"
+          echo "boards=${boards}" >> "${GITHUB_OUTPUT}"
+          echo "publish_release=${publish_release}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "series=${series}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "upstream_baseline=${upstream_baseline}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.meta.outputs.boards) }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
       - name: Free disk space
         shell: bash
         run: |
@@ -96,7 +134,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ steps.meta.outputs.ref }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - name: Install build dependencies
         shell: bash
@@ -116,6 +154,7 @@ jobs:
             libncurses-dev \
             libssl-dev \
             python3 \
+            python3-pyelftools \
             python3-setuptools \
             rsync \
             subversion \
@@ -130,9 +169,10 @@ jobs:
           path: |
             dl
             .ccache
-          key: ${{ runner.os }}-${{ steps.meta.outputs.series }}-${{ hashFiles('configs/mixtile-rockchip-24.10.config', 'configs/mixtile-rockchip-25.12.config', 'feeds.conf.default') }}
+          key: ${{ runner.os }}-${{ needs.meta.outputs.series }}-${{ matrix.board }}-${{ hashFiles('configs/mixtile-*.config', 'feeds.conf.default') }}
           restore-keys: |
-            ${{ runner.os }}-${{ steps.meta.outputs.series }}-
+            ${{ runner.os }}-${{ needs.meta.outputs.series }}-${{ matrix.board }}-
+            ${{ runner.os }}-${{ needs.meta.outputs.series }}-
 
       - name: Update and install feeds
         shell: bash
@@ -145,22 +185,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat "${{ steps.meta.outputs.config }}" > .config
+          cat "configs/mixtile-${{ matrix.board }}-${{ needs.meta.outputs.series }}.config" > .config
           printf '%s\n' 'CONFIG_CCACHE=y' >> .config
+          # Enable all kmod packages
+          sed -i '/^# CONFIG_PACKAGE_kmod/d' .config
+          grep -q 'CONFIG_ALL_KMODS=y' .config || printf '%s\n' 'CONFIG_ALL_KMODS=y' >> .config
           make defconfig
+          KMOD_M=$(grep -c 'CONFIG_PACKAGE_kmod.*=m' .config || true)
+          echo "kmod packages (module): ${KMOD_M}"
 
-      - name: Resolve release metadata
-        id: version
+      - name: Pre-configure kmod feed in firmware
         shell: bash
         run: |
           set -euo pipefail
-          version="$(awk -F':=' '/^VERSION_NUMBER:=/{gsub(/ /, "", $2); print $2}' include/version.mk)"
-          if [[ -z "${version}" ]]; then
-            echo "::error::Unable to resolve OpenWrt version"
-            exit 1
+          BASELINE="${{ needs.meta.outputs.upstream_baseline }}"
+          SERIES="${{ needs.meta.outputs.series }}"
+          if [[ "${BASELINE}" == v* ]]; then
+            VERSION="${BASELINE#v}"
+          else
+            VERSION="$(grep 'VERSION_NUMBER' include/version.mk | sed -n 's/.*VERSION_NUMBER[[:space:]]*[:?]*=[[:space:]]*\([^#]*\)/\1/p' | tr -d ' "' | head -1)"
           fi
-          echo "upstream_baseline=v${version}" >> "${GITHUB_OUTPUT}"
-          echo "release_name=Mixtile OpenWrt ${version}" >> "${GITHUB_OUTPUT}"
+          FEED_URL="https://mixtile-rockchip.github.io/openwrt/releases/${VERSION}/targets/rockchip/armv8/packages"
+          echo "Embedding kmod feed for version: ${VERSION} (series: ${SERIES})"
+
+          if [[ "${SERIES}" == "25.12" ]]; then
+            # 25.12 uses apk — customfeeds.list is owned by the apk package
+            # Must modify package/system/apk/files/customfeeds.list, NOT base-files,
+            # to avoid file conflict during package/install
+            echo "${FEED_URL}/packages.adb" > package/system/apk/files/customfeeds.list
+            cat package/system/apk/files/customfeeds.list
+          else
+            # 24.10 uses opkg — customfeeds.conf in base-files is fine (no package conflict)
+            mkdir -p target/linux/rockchip/armv8/base-files/etc/opkg
+            echo "src/gz mixtile_kmod ${FEED_URL}" > target/linux/rockchip/armv8/base-files/etc/opkg/customfeeds.conf
+            cat target/linux/rockchip/armv8/base-files/etc/opkg/customfeeds.conf
+          fi
 
       - name: Download sources
         shell: bash
@@ -171,8 +230,8 @@ jobs:
       - name: Build firmware
         shell: bash
         run: |
-          set -euo pipefail
-          make -j"$(nproc)" BUILD_LOG=1
+          set -uo pipefail
+          make -j"$(nproc)" BUILD_LOG=1 V=sc || make -j1 BUILD_LOG=1 V=sc
 
       - name: Collect release assets
         if: ${{ success() }}
@@ -181,46 +240,138 @@ jobs:
           set -euo pipefail
           target_dir="bin/targets/rockchip/armv8"
           mkdir -p release-assets
-          find "${target_dir}" -maxdepth 1 -type f \
-            \( -name '*mixtile*' -o -name '*.buildinfo' -o -name '*.manifest' -o -name 'profiles.json' -o -name 'sha256sums' \) \
-            -exec cp {} release-assets/ \;
+
+          # Firmware images only (GitHub Release provides built-in SHA256 verification)
+          find "${target_dir}" -maxdepth 1 -type f -name "*.img.gz" -exec cp {} release-assets/ \;
 
       - name: Upload release assets
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: mixtile-${{ steps.meta.outputs.series }}-firmware
+          name: mixtile-${{ needs.meta.outputs.series }}-${{ matrix.board }}-firmware
           path: release-assets/
           if-no-files-found: error
+
+      - name: Upload kmod packages
+        if: ${{ success() && matrix.board == 'edge2' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmod-packages
+          path: bin/targets/rockchip/armv8/packages/
+          if-no-files-found: warn
 
       - name: Upload build logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: mixtile-${{ steps.meta.outputs.series }}-logs
+          name: mixtile-${{ needs.meta.outputs.series }}-${{ matrix.board }}-logs
           path: logs/
           if-no-files-found: warn
 
+  publish-pages:
+    needs:
+      - meta
+      - build
+    runs-on: ubuntu-latest
+    if: ${{ needs.meta.outputs.publish_release == 'true' }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mixtile-${{ needs.meta.outputs.series }}-*-firmware
+          merge-multiple: true
+          path: staging-firmware/
+
+      - name: Download kmod packages
+        uses: actions/download-artifact@v4
+        with:
+          name: kmod-packages
+          path: staging-kmod/
+
+      - name: Publish to gh-pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE="${{ needs.meta.outputs.upstream_baseline }}"
+          VERSION="${BASELINE#v}"
+
+          # Mirror upstream structure:
+          #   releases/{VERSION}/targets/rockchip/armv8/           <- firmware + sha256sums
+          #   releases/{VERSION}/targets/rockchip/armv8/packages/  <- kmod packages
+          TARGET_DIR="releases/${VERSION}/targets/rockchip/armv8"
+          PKG_DIR="${TARGET_DIR}/packages"
+
+          mkdir -p "${TARGET_DIR}"
+          mkdir -p "${PKG_DIR}"
+
+          # Firmware images
+          find staging-firmware/ -name '*.img.gz' -exec cp {} "${TARGET_DIR}/" \;
+
+          # Generate combined sha256sums (mirrors upstream structure)
+          (cd "${TARGET_DIR}" && sha256sum *.img.gz > sha256sums)
+
+          # kmod packages (edge2 and blade3 share the same target, one set is enough)
+          rsync -a --delete staging-kmod/ "${PKG_DIR}/"
+
+          # Clean up all staging directories
+          rm -rf staging-firmware/ staging-kmod/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Add ${VERSION} firmware and kmod packages"
+          git push
+
+  release:
+    needs:
+      - meta
+      - build
+      - publish-pages
+    runs-on: ubuntu-latest
+    if: ${{ needs.meta.outputs.publish_release == 'true' }}
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mixtile-${{ needs.meta.outputs.series }}-*-firmware
+          merge-multiple: true
+          path: release-assets/
+
       - name: Create draft release
-        if: ${{ success() && steps.meta.outputs.publish_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.version.outputs.release_name }}
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Mixtile OpenWrt ${{ needs.meta.outputs.tag }}
           draft: true
           prerelease: false
           body: |
-            Upstream baseline: `${{ steps.version.outputs.upstream_baseline }}`
+            Upstream baseline: `${{ needs.meta.outputs.upstream_baseline }}`
 
             Supported devices:
             - Mixtile Edge 2
             - Mixtile Blade 3
 
-            Upgrade path:
-            - Stay within the same OpenWrt stable series for unattended sysupgrade.
-            - Validate cross-series upgrades manually before publishing.
+            Firmware types:
+            - `ext4`: writable filesystem, for development
+            - `squashfs`: read-only with overlay, for production (supports factory reset)
 
-            Known issues:
-            - Update this draft with device-specific validation notes before publishing.
+            kmod packages:
+            Kernel modules are pre-configured in the firmware. Install with:
+            ```
+            # OpenWrt 24.10 (opkg)
+            opkg update
+            opkg install kmod-xxx
+
+            # OpenWrt 25.12 (apk)
+            apk update
+            apk add kmod-xxx
+            ```
           files: |
             release-assets/*
